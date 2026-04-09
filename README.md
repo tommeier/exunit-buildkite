@@ -37,7 +37,7 @@ Add `exunit_buildkite` to your test dependencies in `mix.exs`:
 ```elixir
 def deps do
   [
-    {:exunit_buildkite, "~> 0.1", only: :test}
+    {:exunit_buildkite, "~> 0.2", only: :test}
   ]
 end
 ```
@@ -176,7 +176,7 @@ Buildkite plugin, you can replace both with this single formatter.
 
 ```diff
 - {:junit_formatter, "~> 3.4", only: :test},
-+ {:exunit_buildkite, "~> 0.1", only: :test},
++ {:exunit_buildkite, "~> 0.2", only: :test},
 ```
 
 **2. Remove `junit_formatter` config from `config/test.exs`:**
