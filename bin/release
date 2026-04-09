@@ -1,0 +1,157 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Release script for exunit_buildkite
+# Usage: bin/release <major|minor|patch>
+#
+# Steps:
+# 1. Validates clean working tree + main branch
+# 2. Bumps version in mix.exs
+# 3. Updates CHANGELOG.md with commits since last tag
+# 4. Runs tests
+# 5. Commits, tags, pushes
+# 6. Creates GitHub release
+# 7. Publishes to Hex (if HEX_API_KEY is set)
+
+readonly BUMP_TYPE="${1:?Usage: bin/release <major|minor|patch>}"
+readonly MIX_FILE="mix.exs"
+readonly CHANGELOG="CHANGELOG.md"
+readonly README="README.md"
+readonly REPO_URL="https://github.com/tommeier/exunit-buildkite"
+
+# ── Helpers ────────────────────────────────────────────
+
+die() { echo "❌ $1" >&2; exit 1; }
+info() { echo "→ $1"; }
+
+current_version() {
+  grep -m1 '@version "' "$MIX_FILE" | sed 's/.*@version "\(.*\)".*/\1/'
+}
+
+bump_version() {
+  local current="$1" type="$2"
+  local major minor patch
+  IFS='.' read -r major minor patch <<< "$current"
+
+  case "$type" in
+    major) echo "$((major + 1)).0.0" ;;
+    minor) echo "${major}.$((minor + 1)).0" ;;
+    patch) echo "${major}.${minor}.$((patch + 1))" ;;
+    *) die "Invalid bump type: $type (use major, minor, or patch)" ;;
+  esac
+}
+
+# ── Validations ────────────────────────────────────────
+
+[[ -f "$MIX_FILE" ]] || die "Run from project root (mix.exs not found)"
+
+if [[ -n "$(git status --porcelain)" ]]; then
+  die "Working tree is dirty. Commit or stash changes first."
+fi
+
+current_branch=$(git branch --show-current)
+[[ "$current_branch" == "main" ]] || die "Must be on main branch (currently on $current_branch)"
+
+command -v gh >/dev/null || die "gh CLI required (brew install gh)"
+
+# ── Version bump ───────────────────────────────────────
+
+OLD_VERSION=$(current_version)
+NEW_VERSION=$(bump_version "$OLD_VERSION" "$BUMP_TYPE")
+
+info "Bumping $OLD_VERSION → $NEW_VERSION"
+
+# Update mix.exs
+sed -i '' "s/@version \"$OLD_VERSION\"/@version \"$NEW_VERSION\"/" "$MIX_FILE"
+
+# Update README version refs (e.g., ~> 0.1 in installation instructions)
+OLD_MINOR="${OLD_VERSION%.*}"
+NEW_MINOR="${NEW_VERSION%.*}"
+if [[ "$OLD_MINOR" != "$NEW_MINOR" ]]; then
+  sed -i '' "s/~> $OLD_MINOR/~> $NEW_MINOR/g" "$README"
+fi
+
+# ── Changelog ──────────────────────────────────────────
+
+info "Generating changelog entry"
+
+LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+TODAY=$(date +%Y-%m-%d)
+
+if [[ -n "$LAST_TAG" ]]; then
+  COMMITS=$(git log "${LAST_TAG}..HEAD" --oneline --no-merges)
+  COMPARE_URL="${REPO_URL}/compare/${LAST_TAG}...v${NEW_VERSION}"
+else
+  COMMITS=$(git log --oneline --no-merges)
+  COMPARE_URL="${REPO_URL}/releases/tag/v${NEW_VERSION}"
+fi
+
+# Build changelog entry
+ENTRY="## [${NEW_VERSION}] - ${TODAY}\n\n### Changed\n"
+while IFS= read -r line; do
+  if [[ -n "$line" ]]; then
+    # Strip commit hash, keep message
+    msg="${line#* }"
+    ENTRY="${ENTRY}\n- ${msg}"
+  fi
+done <<< "$COMMITS"
+ENTRY="${ENTRY}\n"
+
+# Insert after the header block (after the first ## line or after the preamble)
+if grep -q "^## \[" "$CHANGELOG"; then
+  # Insert before the first existing version entry
+  sed -i '' "/^## \[/i\\
+\\
+${ENTRY}" "$CHANGELOG"
+else
+  # Append to end
+  echo -e "\n${ENTRY}" >> "$CHANGELOG"
+fi
+
+# Update comparison link at bottom
+if [[ -n "$LAST_TAG" ]]; then
+  echo "[${NEW_VERSION}]: ${COMPARE_URL}" >> "$CHANGELOG"
+else
+  # First release — just a tag link
+  sed -i '' "s|\[${OLD_VERSION}\]:.*|[${NEW_VERSION}]: ${COMPARE_URL}|" "$CHANGELOG"
+fi
+
+# ── Tests ──────────────────────────────────────────────
+
+info "Running tests"
+if ! mix test; then
+  info "Tests failed — reverting version changes"
+  git checkout -- .
+  die "Fix tests before releasing"
+fi
+
+# ── Commit, tag, push ─────────────────────────────────
+
+info "Committing and tagging v${NEW_VERSION}"
+git add -A
+git commit -m "Release v${NEW_VERSION}"
+git tag -a "v${NEW_VERSION}" -m "v${NEW_VERSION}"
+
+info "Pushing to origin"
+git push origin main
+git push origin "v${NEW_VERSION}"
+
+# ── GitHub release ────────────────────────────────────
+
+info "Creating GitHub release"
+gh release create "v${NEW_VERSION}" \
+  --title "v${NEW_VERSION}" \
+  --notes "See [CHANGELOG.md](${REPO_URL}/blob/main/CHANGELOG.md#${NEW_VERSION//.}-${TODAY}) for details."
+
+# ── Hex publish ───────────────────────────────────────
+
+if [[ -n "${HEX_API_KEY:-}" ]]; then
+  info "Publishing to Hex"
+  mix hex.publish --yes
+else
+  info "Skipping Hex publish (set HEX_API_KEY to publish)"
+  echo "  Run: HEX_API_KEY=\$KEY mix hex.publish"
+fi
+
+echo ""
+echo "✅ Released v${NEW_VERSION}"

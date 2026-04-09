@@ -1,0 +1,9 @@
+/_build/
+/deps/
+/doc/
+erl_crash.dump
+*.ez
+exunit_buildkite-*.tar
+
+.claude/settings.local.json
+CLAUDE.md
