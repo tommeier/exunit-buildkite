@@ -123,7 +123,9 @@ defmodule ExUnitBuildkite.Formatter do
         {:error, :buildkite_agent_not_found}
 
       path ->
-        case System.cmd(path, ["annotate", body, "--append", "--style", style, "--context", context],
+        case System.cmd(
+               path,
+               ["annotate", body, "--append", "--style", style, "--context", context],
                stderr_to_stdout: true
              ) do
           {_, 0} -> :ok

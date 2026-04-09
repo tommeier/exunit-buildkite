@@ -104,7 +104,12 @@ defmodule ExUnitBuildkite.FormatterTest do
       {:ok, formatter} = GenServer.start_link(ExUnitBuildkite.Formatter, [])
 
       GenServer.cast(formatter, {:suite_started, %{}})
-      GenServer.cast(formatter, {:module_started, %ExUnit.TestModule{name: Foo, state: nil, tests: []}})
+
+      GenServer.cast(
+        formatter,
+        {:module_started, %ExUnit.TestModule{name: Foo, state: nil, tests: []}}
+      )
+
       _ = :sys.get_state(formatter)
 
       assert ExUnitBuildkite.TestAnnotator.annotations() == []
