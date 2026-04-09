@@ -2,15 +2,55 @@ defmodule ExUnitBuildkite.Formatter do
   @moduledoc """
   An ExUnit formatter that annotates Buildkite builds with test failures in real-time.
 
-  Each test failure is immediately sent to `buildkite-agent annotate --append`,
-  appearing in the build's annotation panel as it happens.
+  This module implements the ExUnit formatter protocol — a `GenServer` that receives
+  test lifecycle events. On each test failure, it formats the failure output and sends
+  it to `buildkite-agent annotate --append`, which adds it to the build's annotation
+  panel in the Buildkite UI.
 
-  The formatter is safe to use outside Buildkite — if `buildkite-agent` is not
-  found, failures are silently skipped.
+  ## Formatter Protocol
+
+  ExUnit sends the following events via `GenServer.cast/2`:
+
+  | Event | Handled? | Description |
+  |-------|----------|-------------|
+  | `{:test_finished, %ExUnit.Test{state: {:failed, _}}}` | Yes | Formats and annotates the failure |
+  | `{:test_finished, %ExUnit.Test{state: nil}}` | No | Passing test — ignored |
+  | `{:suite_started, _}` | No | Ignored |
+  | `{:suite_finished, _}` | No | Ignored |
+  | `{:module_started, _}` | No | Ignored |
+  | `{:module_finished, _}` | No | Ignored |
+
+  ## Annotation Output
+
+  Each failure produces a collapsible HTML block:
+
+  ```html
+  <details>
+    <summary>
+      <code>test name</code> — Module (<code>file:line</code>)
+    </summary>
+    <pre>formatted failure output from ExUnit</pre>
+  </details>
+  ```
+
+  Multiple failures are appended to the same annotation context, producing a
+  stacked list of collapsible failure blocks.
+
+  ## Custom Annotator
+
+  For testing or custom integrations, you can replace the built-in annotator
+  (which calls `buildkite-agent`) with your own module:
+
+      config :exunit_buildkite, annotator: MyApp.TestAnnotator
+
+  The module must implement `annotate/3`:
+
+      @callback annotate(body :: String.t(), context :: String.t(), style :: String.t()) :: :ok
   """
 
   use GenServer
 
+  @typedoc "Formatter state tracked across test events."
   @type state :: %{
           context: String.t(),
           style: String.t(),
@@ -50,7 +90,16 @@ defmodule ExUnitBuildkite.Formatter do
   Formats a test failure as an HTML annotation for Buildkite.
 
   Returns an HTML string containing a collapsible `<details>` block with the
-  test name, location, and formatted failure output.
+  test name, module, file location, and the full formatted failure output
+  from `ExUnit.Formatter.format_test_failure/5`.
+
+  This function is public to support direct testing of annotation output.
+
+  ## Parameters
+
+    * `test` — the `%ExUnit.Test{}` struct for the failed test
+    * `failures` — the failures list from `test.state` (list of `{kind, reason, stack}` tuples)
+    * `counter` — failure number (used for numbering in the formatted output)
 
   ## Examples
 
@@ -68,6 +117,8 @@ defmodule ExUnitBuildkite.Formatter do
       iex> html =~ "test addition"
       true
       iex> html =~ "test/math_test.exs:5"
+      true
+      iex> html =~ "<details>"
       true
   """
   @spec format_annotation(ExUnit.Test.t(), list(), pos_integer()) :: String.t()
@@ -136,6 +187,8 @@ defmodule ExUnitBuildkite.Formatter do
     e -> {:error, Exception.message(e)}
   end
 
+  # Plain text formatter for ExUnit.Formatter.format_test_failure/5.
+  # Returns diff-enabled output without ANSI color codes.
   defp text_formatter(:diff_enabled?, _), do: true
   defp text_formatter(_, msg), do: msg
 
